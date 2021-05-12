@@ -1,0 +1,435 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  CognitoUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: CognitoPool
+  CognitoUserPoolDomain:
+    Type: 'AWS::Cognito::UserPoolDomain'
+    Properties:
+      # using client id will make the domain unique
+      Domain: !Sub dns-name-${CognitoUserPoolClient}
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPoolClient
+  CognitoUserPoolGroup:
+    Type: 'AWS::Cognito::UserPoolGroup'
+    Properties:
+      GroupName: pet-veterinarian
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPool
+  # >>> helper to create Cognito User without the need to confirm email
+  HelperCognitoLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: helperCognitoLambdaRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:Admin*
+                Resource: !GetAtt CognitoUserPool.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-HelperInitCognitoFunction-*:*
+  HelperInitCognitoFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: >
+          const AWS = require("aws-sdk");
+          const response = require("cfn-response");
+          const cognitoidentityserviceprovider = new AWS.CognitoIdentityServiceProvider({apiVersion: '2016-04-18'});
+
+          exports.handler = function (event, context, callback) {
+              var userPoolId = event.ResourceProperties.UserPoolId;
+              var username = event.ResourceProperties.CognitoUserName;
+              var pass = event.ResourceProperties.CognitoUserPassword;
+
+              console.log("username: " + username);
+
+              var params = {
+                  UserPoolId: userPoolId,
+                  Username: username,
+                  TemporaryPassword: pass
+              };
+
+              cognitoidentityserviceprovider.adminCreateUser(params, function (err, data) {
+                  if (err) {
+                      console.log(err, err.stack);
+                  } else {
+                      console.log(data);
+                  }
+
+                  const params = {
+                      UserPoolId: userPoolId,
+                      Username: username,
+                      Password: pass,
+                      Permanent: true
+                  };
+                  cognitoidentityserviceprovider.adminSetUserPassword(params, function (err, data) {
+                      if (err) {
+                          response.send(event, context, "FAILED", {});
+                      } else {
+                          response.send(event, context, "SUCCESS", {});
+                      }
+                  });
+              });
+          };
+      Handler: index.handler
+      Role: !GetAtt HelperCognitoLambdaRole.Arn
+      Runtime: nodejs12.x
+      Timeout: 30
+  HelperInitializeCognitoUser:
+    Type: Custom::HelperInitCognitoFunction
+    DependsOn: CognitoUserPool
+    Properties:
+      ServiceToken: !GetAtt HelperInitCognitoFunction.Arn
+      UserPoolId: !Ref CognitoUserPool
+      CognitoUserName: !Ref CognitoUserName
+      CognitoUserPassword: !Ref CognitoUserPassword
+  # <<< helper to create Cognito User without the need to confirm email
+  CognitoUserPoolUserToGroupAttachment:
+    Type: 'AWS::Cognito::UserPoolUserToGroupAttachment'
+    Properties:
+      GroupName: !Ref CognitoUserPoolGroup
+      Username: !Ref CognitoUserName
+      UserPoolId: !Ref CognitoUserPool
+    DependsOn:
+      - CognitoUserPoolGroup
+      - HelperInitializeCognitoUser
+  CognitoUserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - email
+        - openid
+      CallbackURLs:
+        - 'http://localhost'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+    DependsOn:
+      - CognitoUserPool
+# <<< Amazon Cognito
+# >>> API Service
+  ApiServiceIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      Roles:
+        - !Ref ApiServiceIAMRole
+      PolicyName: ApiServiceIAMPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:Admin*
+            Resource: !GetAtt CognitoUserPool.Arn
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ApiServiceLambdaFunction:*
+  ApiServiceIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: ApiServiceIAMRole
+      AssumeRolePolicyDocument: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+            }
+          ]
+        }
+  ApiServiceLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: ApiServiceLambdaFunction
+      Runtime: "python3.6"
+      Handler: "lambda.handler"
+      Role: !GetAtt ApiServiceIAMRole.Arn
+      Code:
+        S3Bucket: !Sub ${AWS::StackName}-${AWS::AccountId}-${AWS::Region}-lambdas
+        S3Key: "pets-api.zip"
+  ApiServiceLambdaFunctionPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt ApiServiceLambdaFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+# <<< API Service
+# >>> Amazon API gateway
+  ApiGatewayRestApi:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: "MyApiGateway"
+  ApiGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: "{api+}"
+  ApiGatewayMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: "ANY"
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGatewayRestApi
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: "POST"
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiServiceLambdaFunction.Arn}/invocations
+    DependsOn: ApiGatewayAuthorizer
+  ApiGatewayDeploymentProtected:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: dev
+      Description: protected api
+    DependsOn:
+      - ApiGatewayAuthorizer
+      - ApiGatewayMethod
+  CustomAuthIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      Roles:
+        - !Ref CustomAuthIAMRole
+      PolicyName: CustomAuthIAMPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cognito-idp:*
+            Resource: !GetAtt CognitoUserPool.Arn
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/CustomAuthLambdaFunction:*
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchGetItem
+            Resource: !GetAtt DynamoDBTable.Arn
+  CustomAuthIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: CustomAuthIAMRole
+      AssumeRolePolicyDocument: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+            }
+          ]
+        }
+  CustomAuthLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: CustomAuthLambdaFunction
+      Runtime: "python3.6"
+      Handler: "lambda.handler"
+      Role: !GetAtt CustomAuthIAMRole.Arn
+      Code:
+        S3Bucket: !Sub cognito-api-gateway-${AWS::AccountId}-${AWS::Region}-lambdas
+        S3Key: "custom-auth.zip"
+      Environment:
+        Variables:
+          TABLE_NAME: "auth-policy-store"
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+  ApiGatewayCustomAuthIAMPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: ApiGatewayCustomAuthIAMPolicy
+      Roles:
+        - !Ref ApiGatewayCustomAuthIAMRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'lambda:InvokeFunction'
+            Resource: !GetAtt CustomAuthLambdaFunction.Arn
+  ApiGatewayCustomAuthIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: ApiGatewayCustomAuthIAMRole
+      AssumeRolePolicyDocument: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Principal": {
+                "Service": "apigateway.amazonaws.com"
+              },
+              "Effect": "Allow",
+              "Sid": ""
+            }
+          ]
+        }
+  ApiGatewayAuthorizer:
+    Type: 'AWS::ApiGateway::Authorizer'
+    Properties:
+      Name: custom-auth
+      RestApiId: !Ref ApiGatewayRestApi
+      Type: REQUEST
+      IdentitySource: method.request.header.Authorization
+      AuthorizerResultTtlInSeconds: '300'
+      AuthorizerCredentials: !GetAtt ApiGatewayCustomAuthIAMRole.Arn
+      AuthorizerUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomAuthLambdaFunction.Arn}/invocations
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: auth-policy-store
+      AttributeDefinitions:
+        - AttributeName: "group"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "group"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+# <<< API Gateway authorizer
+# >>> helper function
+  HelperDynamoDbLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: dynamodbAccessRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt DynamoDBTable.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}::log-group:/aws/lambda/${AWS::StackName}-*:*
+  HelperDynamoDbInitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: >
+          const AWS = require("aws-sdk");
+          const response = require("cfn-response");
+          const docClient = new AWS.DynamoDB.DocumentClient();
+          exports.handler = function(event, context) {
+              console.log(JSON.stringify(event,null,2));
+              var params = {
+                TableName: event.ResourceProperties.DynamoTableName,
+                Item:{
+                       "group": "pet-veterinarian",
+                       "policy": {
+                         "Statement": [
+                           {
+                             "Action": "execute-api:Invoke",
+                             "Effect": "Allow",
+                             "Resource": [
+                               "arn:aws:execute-api:*:*:*/*/*/petstore/v1/*",
+                               "arn:aws:execute-api:*:*:*/*/GET/petstore/v2/status"
+                             ],
+                             "Sid": "PetStore-API"
+                           }
+                         ],
+                         "Version": "2012-10-17"
+                       }
+                     }
+            };
+          docClient.put(params, function(err, data) { if (err) {
+            response.send(event, context, "FAILED", {});
+          } else {
+            response.send(event, context, "SUCCESS", {});
+          }
+          });
+          };
+      Handler: index.handler
+      Role: !GetAtt HelperDynamoDbLambdaRole.Arn
+      Runtime: nodejs12.x
+      Timeout: 30
+  HelperDynamoDbInitializeDynamoDB:
+    Type: Custom::InitFunction
+    DependsOn: DynamoDBTable
+    Properties:
+      ServiceToken: !GetAtt HelperDynamoDbInitFunction.Arn
+      DynamoTableName: !Ref DynamoDBTable
+# >>> Inputs
+Parameters:
+  CognitoUserName:
+    Type: String
+    Default: cognitouser
+    Description: Enter Cognito username.
+  CognitoUserPassword:
+    Type: String
+    AllowedPattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[\^$*.\[\]{}\(\)?\-“!@#%&/,><\’:;|_~`])\S{6,99}$'
+    Description: |-
+      Enter Cognito users password. Password must fulfill User Pool Password Requirements.
+      See documentaton for more details https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-policies.html
+# >>> Outputs
+Outputs:
+  CognitoUserPoolClientId:
+    Value: !Ref CognitoUserPoolClient
+  CognitoHostedUiUrl:
+    Value: !Sub https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=token&scope=email+openid&redirect_uri=http://localhost
+  ApiGatewayDeploymentUrlApiEndpoint:
+    Value: !Sub https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/dev/petstore/v1/pets
+  ApiGatewayDeploymentUrlApiEndpointV2:
+    Value: !Sub https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/dev/petstore/v2/pets
