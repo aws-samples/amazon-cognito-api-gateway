@@ -66,7 +66,7 @@ Based on this example policy, the user is allowed to make calls to the `petstore
 
 For this solution, you need the following prerequisites:
 * The [AWS Command Line Interface (CLI)](https://aws.amazon.com/cli/) installed and [configured for use](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html).
-* Python 3.6 or later, to package Python code for Lambda  
+* Python 3.9 or later, to package Python code for Lambda  
     `Note`: We recommend that you use a [virtual environment](https://docs.python.org/3.9/library/venv.html) or [virtualenvwrapper](https://virtualenvwrapper.readthedocs.io/en/latest/) to isolate the solution from the rest of your Python environment.
 * An [IAM](https://aws.amazon.com/iam/) role or user with enough permissions to create Amazon Cognito User Pool, IAM Role, Lambda, IAM Policy, API Gateway and DynamoDB table.
 * The GitHub repository for the solution. You can [download it](https://github.com/aws-samples/amazon-cognito-api-gateway/archive/refs/heads/main.zip), or you can use the following [Git](https://git-scm.com/) command to download it from your terminal.  
