@@ -178,7 +178,7 @@ Resources:
     Type: 'AWS::Lambda::Function'
     Properties:
       FunctionName: ApiServiceLambdaFunction
-      Runtime: "python3.6"
+      Runtime: "python3.9"
       Handler: "lambda.handler"
       Role: !GetAtt ApiServiceIAMRole.Arn
       Code:
@@ -269,7 +269,7 @@ Resources:
     Type: 'AWS::Lambda::Function'
     Properties:
       FunctionName: CustomAuthLambdaFunction
-      Runtime: "python3.6"
+      Runtime: "python3.9"
       Handler: "lambda.handler"
       Role: !GetAtt CustomAuthIAMRole.Arn
       Code:
