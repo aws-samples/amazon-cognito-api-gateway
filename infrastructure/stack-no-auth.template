@@ -94,7 +94,7 @@ Resources:
           };
       Handler: index.handler
       Role: !GetAtt HelperCognitoLambdaRole.Arn
-      Runtime: nodejs12.x
+      Runtime: nodejs16.x
       Timeout: 30
   HelperInitializeCognitoUser:
     Type: Custom::HelperInitCognitoFunction
