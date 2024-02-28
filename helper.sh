@@ -245,6 +245,8 @@ do
       ;;
     package-custom-auth)
       cd ./custom-auth
+      mkdir ./package
+      # may try with pip3 install --target ./package python-jose==3.2.0 if you have pip3
       pip install --target ./package python-jose==3.2.0
       cd ./package
       zip -r ../custom-auth.zip . > /dev/null
